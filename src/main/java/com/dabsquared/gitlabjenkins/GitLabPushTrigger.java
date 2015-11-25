@@ -306,7 +306,12 @@ public class GitLabPushTrigger extends Trigger<Job<?, ?>> {
 
     // executes when the Trigger receives a merge request
     public void onPost(final GitLabMergeRequest req) {
-    	if (triggerOnMergeRequest) {
+        LOGGER.log(Level.INFO,
+                "onPost GitLabMergeRequest, targetbranch is {0}, include is {1}, exclude is {2}.",
+                new String[]{this.getTargetBranch(req), this.getIncludeBranchesSpec(),this.getExcludeBranchesSpec()});
+    	if (triggerOnMergeRequest && this.isBranchAllowed(this.getTargetBranch(req))) {
+            LOGGER.log(Level.INFO,"onPost GitLabMergeRequest started, source branch is {0}, target branch is {1}.",
+                    new String[]{this.getSourceBranch(req),this.getTargetBranch(req)});
     		getDescriptor().queue.execute(new Runnable() {
                 public void run() {
 	                LOGGER.log(Level.INFO, "{0} triggered for merge request.", job.getName());
@@ -497,7 +502,7 @@ public class GitLabPushTrigger extends Trigger<Job<?, ?>> {
     }
 
     private void onStartedPushRequest(Run run, GitLabPushCause cause) {
-        if(addCiMessage) {
+        if (addCiMessage) {
             cause.getPushRequest().createCommitStatus(this.getDescriptor().getGitlab().instance(), "running", Jenkins.getInstance().getRootUrl() + run.getUrl());
         }
     }
@@ -517,6 +522,17 @@ public class GitLabPushTrigger extends Trigger<Job<?, ?>> {
     	}
 
     	return result;
+    }
+
+    private String getTargetBranch(GitLabRequest req) {
+        String result = null;
+        if (req instanceof GitLabPushRequest) {
+            result = ((GitLabPushRequest)req).getRef().replaceAll("refs/heads/", "");
+        } else {
+            result = ((GitLabMergeRequest)req).getObjectAttribute().getTargetBranch();
+        }
+
+        return result;
     }
 
     @Override
