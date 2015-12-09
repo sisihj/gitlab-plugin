@@ -21,10 +21,8 @@ import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.URL;
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
-import java.util.ListIterator;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -50,9 +48,6 @@ import org.gitlab.api.models.GitlabProject;
 import org.kohsuke.stapler.StaplerRequest;
 import org.kohsuke.stapler.StaplerResponse;
 
-import com.dabsquared.gitlabjenkins.GitLabMergeRequest;
-import com.dabsquared.gitlabjenkins.GitLabPushRequest;
-import com.dabsquared.gitlabjenkins.GitLabPushTrigger;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 
@@ -331,19 +326,19 @@ public class GitLabWebHook implements UnprotectedRootAction {
      #   }
      * @param data
      */
-    private void generateBuild(String data, Job project, StaplerRequest req, StaplerResponse rsp) {
+    public void generateBuild(String data, Job project, StaplerRequest req, StaplerResponse rsp) {
         JSONObject json = JSONObject.fromObject(data);
         LOGGER.log(Level.FINE, "data: {0}", json.toString(4));
-
+        //TODO "object_kind": "note",   "object_attributes": -> "note": "test for mr",
         String objectType = json.optString("object_kind");
-
-        if(objectType != null && objectType.equals("merge_request")) {
+        if(objectType != null && objectType.equals("note")) {
+            this.generateNoteBuild(data, project, req, rsp);
+        } else if(objectType != null && objectType.equals("merge_request")) {
             this.generateMergeRequestBuild(data, project, req, rsp);
         } else {
             this.generatePushBuild(data, project, req, rsp);
         }
     }
-
 
     public void generatePushBuild(String json, Job project, StaplerRequest req, StaplerResponse rsp) {
         GitLabPushRequest request = GitLabPushRequest.create(json);
@@ -505,7 +500,57 @@ public class GitLabWebHook implements UnprotectedRootAction {
         }
     }
 
+    /**
+     *
+     * @param json
+     * @param project
+     * @param req
+     * @param rsp
+     */
+    public void generateNoteBuild(String json, Job project, StaplerRequest req, StaplerResponse rsp) {
+        GitLabNoteRequest request = GitLabNoteRequest.create(json);
+        if("closed".equals(request.getMergeRequest().getState())) {
+            LOGGER.log(Level.INFO, "Closed Merge Request, no build started");
+            return;
+        }
+        if("merged".equals(request.getMergeRequest().getState())) {
+            LOGGER.log(Level.INFO, "Accepted Merge Request, no build started");
+            return;
+        }
+        if("update".equals(request.getMergeRequest().getAction())) {
+            LOGGER.log(Level.INFO, "Existing Merge Request, build will be trigged by buildOpenMergeRequests instead");
+            return;
+        }
 
+        if(request.getMergeRequest().getDescription().contains("[ci-skip]")) {
+            LOGGER.log(Level.INFO, "Skipping MR " + request.getMergeRequest().getTitle() + " due to ci-skip.");
+            return;
+        }
+        if( !request.getObjectAttributes().getNote().toLowerCase().contains("test this mr")) {
+            LOGGER.log(Level.INFO, " do not contain keyword test this mr, no build started");
+            return;
+        }
+
+        Authentication old = SecurityContextHolder.getContext().getAuthentication();
+        SecurityContextHolder.getContext().setAuthentication(ACL.SYSTEM);
+        try {
+            GitLabPushTrigger trigger = null;
+            if (project instanceof ParameterizedJobMixIn.ParameterizedJob) {
+                ParameterizedJobMixIn.ParameterizedJob p = (ParameterizedJobMixIn.ParameterizedJob) project;
+                for (Trigger t : p.getTriggers().values()) {
+                    if (t instanceof GitLabPushTrigger) {
+                        trigger = (GitLabPushTrigger) t;
+                    }
+                }
+            }
+            if (trigger == null) {
+                return;
+            }
+            trigger.onPost(request);
+        } finally {
+            SecurityContextHolder.getContext().setAuthentication(old);
+        }
+    }
 
     /**************************************************
      *

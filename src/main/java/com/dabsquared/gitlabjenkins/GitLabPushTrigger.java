@@ -45,6 +45,7 @@ import org.apache.commons.lang.StringUtils;
 import org.eclipse.jgit.transport.RemoteConfig;
 import org.eclipse.jgit.transport.URIish;
 import org.gitlab.api.models.GitlabBranch;
+import org.gitlab.api.models.GitlabMergeRequest;
 import org.gitlab.api.models.GitlabProject;
 import org.kohsuke.stapler.AncestorInPath;
 import org.kohsuke.stapler.DataBoundConstructor;
@@ -144,6 +145,7 @@ public class GitLabPushTrigger extends Trigger<Job<?, ?>> {
     public boolean getCiSkip() {
         return ciSkip;
     }
+
     private boolean isBranchAllowed(final String branchName) {
         final List<String> exclude = DescriptorImpl.splitBranchSpec(this.getExcludeBranchesSpec());
         final List<String> include = DescriptorImpl.splitBranchSpec(this.getIncludeBranchesSpec());
@@ -395,6 +397,101 @@ public class GitLabPushTrigger extends Trigger<Job<?, ?>> {
 
             });
     	}
+    }
+
+
+
+    // executes when the Trigger receives a note request
+    public void onPost(final GitLabNoteRequest req) {
+        LOGGER.log(Level.INFO,
+                "onPost GitLabNoteRequest, targetbranch is {0}, include is {1}, exclude is {2}.",
+                new String[]{req.getMergeRequest().getTargetBranch(), this.getIncludeBranchesSpec(),this.getExcludeBranchesSpec()});
+        if (this.isBranchAllowed(req.getMergeRequest().getTargetBranch())) {
+            LOGGER.log(Level.INFO,"onPost GitLabNoteRequest started, source branch is {0}, target branch is {1}.",
+                    new String[]{req.getMergeRequest().getSourceBranch(),req.getMergeRequest().getTargetBranch()});
+            getDescriptor().queue.execute(new Runnable() {
+                public void run() {
+                    LOGGER.log(Level.INFO, "{0} triggered for Note request.", job.getName());
+                    String name = " #" + job.getNextBuildNumber();
+                    GitLabMergeRequest gmr = req.getGitLabMergeRequest();
+                    GitLabMergeCause cause = createGitLabNoteCause(gmr);
+                    Action[] actions = createActions(gmr);
+                    ParameterizedJobMixIn scheduledJob = new ParameterizedJobMixIn() {
+                        @Override
+                        protected Job asJob() {
+                            return job;
+                        }
+                    };
+
+                    boolean scheduled;
+                    if (job instanceof AbstractProject<?,?>) {
+                        AbstractProject job_ap = (AbstractProject<?, ?>) job;
+                        scheduled = job_ap.scheduleBuild(job_ap.getQuietPeriod(), cause, actions);
+                    }
+                    else {
+                        scheduled = scheduledJob.scheduleBuild(cause);
+                    }
+
+                    if (scheduled) {
+                        LOGGER.log(Level.INFO, "GitLab Note Request detected in {0}. Triggering {1}", new String[]{job.getName(), name});
+                    } else {
+                        LOGGER.log(Level.INFO, "GitLab Note Request detected in {0}. Job is already in the queue.", job.getName());
+                    }
+
+                    if(addCiMessage) {
+                        req.createCommitStatus(getDescriptor().getGitlab().instance(), "pending", Jenkins.getInstance().getRootUrl() + job.getUrl());
+                    }
+                }
+
+                private GitLabMergeCause createGitLabNoteCause(GitLabMergeRequest req) {
+                    GitLabMergeCause cause;
+                    try {
+                        cause = new GitLabMergeCause(req, getLogFile());
+                    } catch (IOException ex) {
+                        cause = new GitLabMergeCause(req);
+                    }
+                    return cause;
+                }
+
+                private Action[] createActions(GitLabMergeRequest req) {
+                    List<Action> actions = new ArrayList<Action>();
+
+                    Map<String, ParameterValue> values = getDefaultParameters();
+                    values.put("gitlabSourceBranch", new StringParameterValue("gitlabSourceBranch", req.getObjectAttribute().getSourceBranch()));
+                    values.put("gitlabTargetBranch", new StringParameterValue("gitlabTargetBranch", req.getObjectAttribute().getTargetBranch()));
+                    values.put("gitlabActionType", new StringParameterValue("gitlabActionType", "MERGE"));
+
+
+                    LOGGER.log(Level.INFO, "Trying to get name and URL for job: {0}", job.getName());
+                    String sourceRepoName = getDesc().getSourceRepoNameDefault(job);
+                    String sourceRepoURL = getDesc().getSourceRepoURLDefault(job).toString();
+
+                    if (!getDescriptor().getGitlabHostUrl().isEmpty()) {
+                        // Get source repository if communication to Gitlab is possible
+                        try {
+                            sourceRepoName = req.getSourceProject(getDesc().getGitlab()).getPathWithNamespace();
+                            sourceRepoURL = req.getSourceProject(getDesc().getGitlab()).getSshUrl();
+                        } catch (IOException ex) {
+                            LOGGER.log(Level.WARNING, "Could not fetch source project''s data from Gitlab. '('{0}':' {1}')'", new String[]{ex.toString(), ex.getMessage()});
+                        }
+                    }
+
+                    values.put("gitlabSourceRepoName", new StringParameterValue("gitlabSourceRepoName", sourceRepoName));
+                    values.put("gitlabSourceRepoURL", new StringParameterValue("gitlabSourceRepoURL", sourceRepoURL));
+
+                    List<ParameterValue> listValues = new ArrayList<ParameterValue>(values.values());
+
+                    ParametersAction parametersAction = new ParametersAction(listValues);
+                    actions.add(parametersAction);
+
+                    Action[] actionsArray = actions.toArray(new Action[0]);
+
+                    return actionsArray;
+                }
+
+
+            });
+        }
     }
 
     private Map<String, ParameterValue> getDefaultParameters() {
