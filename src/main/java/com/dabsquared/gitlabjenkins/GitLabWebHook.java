@@ -331,6 +331,7 @@ public class GitLabWebHook implements UnprotectedRootAction {
         LOGGER.log(Level.FINE, "data: {0}", json.toString(4));
         //TODO "object_kind": "note",   "object_attributes": -> "note": "test for mr",
         String objectType = json.optString("object_kind");
+        LOGGER.log(Level.INFO, "object_kind: {0}", objectType);
         if(objectType != null && objectType.equals("note")) {
             this.generateNoteBuild(data, project, req, rsp);
         } else if(objectType != null && objectType.equals("merge_request")) {
@@ -530,7 +531,7 @@ public class GitLabWebHook implements UnprotectedRootAction {
             LOGGER.log(Level.INFO, " do not contain keyword test this mr, no build started");
             return;
         }
-
+        LOGGER.log(Level.INFO, " start generateNoteBuild.");
         Authentication old = SecurityContextHolder.getContext().getAuthentication();
         SecurityContextHolder.getContext().setAuthentication(ACL.SYSTEM);
         try {
